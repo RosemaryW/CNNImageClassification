@@ -1,0 +1,280 @@
+
+# Use GPU for Theano, comment to use CPU instead of GPU
+# Tensorflow uses GPU by default
+import os
+os.environ["THEANO_FLAGS"] = "mode=FAST_RUN,device=gpu,floatX=float32"
+
+# If using tensorflow, set image dimensions order
+from keras import backend as K
+if K.backend()=='tensorflow':
+    K.set_image_dim_ordering("th")
+
+import time
+#import matplotlib.pyplot as plt
+import numpy as np
+#% matplotlib inline
+np.random.seed(2017) 
+
+import tensorflow as tf 
+import nengo
+import nengo_dl
+
+# from keras.models import Sequential
+# from keras.layers.convolutional import Convolution2D, MaxPooling2D
+# from keras.layers import Activation, Flatten, Dense, Dropout
+# from keras.layers.normalization import BatchNormalization
+from keras.utils import np_utils
+from keras.datasets.cifar import load_batch
+
+num_train_samples = 50000
+
+path = "/Users/rw/Desktop/ctn01/cifar-10-batches-py"
+
+train_features = np.empty((num_train_samples, 3, 32,32), dtype='uint8')
+train_labels = np.empty((num_train_samples,), dtype='uint8')
+
+for i in range(1, 6):
+    fpath = os.path.join(path, 'data_batch_' + str(i))
+    (train_features[(i - 1) * 10000: i * 10000, : , : , : ],
+     train_labels[(i - 1) * 10000: i * 10000]) = load_batch(fpath)
+
+fpath = os.path.join(path, 'test_batch')
+test_features, test_labels = load_batch(fpath)
+
+train_labels = np.reshape(train_labels, (len(train_labels), 1))
+test_labels = np.reshape(test_labels, (len(test_labels), 1))
+
+# if K.image_data_format() == 'channels_last':
+# 	train_features = train_features.transpose(0, 2, 3, 1)
+# 	test_features = test_features.transpose(0, 2, 3, 1)
+# from keras.datasets import cifar10
+# (train_features, train_labels), (test_features, test_labels) = cifar10.load_data()
+
+
+num_train, img_channels, img_rows, img_cols =  train_features.shape
+num_test, _, _, _ =  test_features.shape
+num_classes = len(np.unique(train_labels))
+
+#show example from each class
+# class_names = ['airplane','automobile','bird','cat','deer',
+#                'dog','frog','horse','ship','truck']
+# fig = plt.figure(figsize=(8,3))
+# for i in range(num_classes):
+#     ax = fig.add_subplot(2, 5, 1 + i, xticks=[], yticks=[])
+#     idx = np.where(train_labels[:]==i)[0]
+#     features_idx = train_features[idx,::]
+#     img_num = np.random.randint(features_idx.shape[0])
+#     im = np.transpose(features_idx[img_num,::], (1, 2, 0))
+#     ax.set_title(class_names[i])
+#     plt.imshow(im)
+# plt.show()
+
+
+#pre-processing 
+train_features = train_features.astype('float32')/255
+test_features = test_features.astype('float32')/255
+# convert class labels to binary class labels
+train_labels = np_utils.to_categorical(train_labels, num_classes)
+test_labels = np_utils.to_categorical(test_labels, num_classes)
+
+#plot model accuracy 
+# def plot_model_history(model_history):
+#     fig, axs = plt.subplots(1,2,figsize=(15,5))
+#     # summarize history for accuracy
+#     axs[0].plot(range(1,len(model_history.history['acc'])+1),model_history.history['acc'])
+#     axs[0].plot(range(1,len(model_history.history['val_acc'])+1),model_history.history['val_acc'])
+#     axs[0].set_title('Model Accuracy')
+#     axs[0].set_ylabel('Accuracy')
+#     axs[0].set_xlabel('Epoch')
+#     axs[0].set_xticks(np.arange(1,len(model_history.history['acc'])+1),len(model_history.history['acc'])/10)
+#     axs[0].legend(['train', 'val'], loc='best')
+#     # summarize history for loss
+#     axs[1].plot(range(1,len(model_history.history['loss'])+1),model_history.history['loss'])
+#     axs[1].plot(range(1,len(model_history.history['val_loss'])+1),model_history.history['val_loss'])
+#     axs[1].set_title('Model Loss')
+#     axs[1].set_ylabel('Loss')
+#     axs[1].set_xlabel('Epoch')
+#     axs[1].set_xticks(np.arange(1,len(model_history.history['loss'])+1),len(model_history.history['loss'])/10)
+#     axs[1].legend(['train', 'val'], loc='best')
+#     plt.show()
+
+#compute test accuracy
+# def accuracy(test_x, test_y, model):
+#     result = model.predict(test_x)
+#     predicted_class = np.argmax(result, axis=1)
+#     true_class = np.argmax(test_y, axis=1)
+#     num_correct = np.sum(predicted_class == true_class) 
+#     accuracy = float(num_correct)/result.shape[0]
+#     return (accuracy * 100)
+
+with nengo.Network() as net:
+	net.config[nengo.Ensemble].max_rates = nengo.dists.Choice([100])
+	net.config[nengo.Ensemble].intercepts = nengo.dists.Choice([0])
+	neuron_type = nengo.LIF(amplitude=0.01)
+
+	nengo_dl.configure_settings(trainable=False)
+
+	inp = nengo.Node([0]*3*32*32)
+
+	#1st conv layer
+	x = nengo_dl.tensor_layer(inp, tf.layers.conv2d, shape_in=(32,32,3),filters=48, kernel_size=3, padding='same')
+	#non-linearity
+	x = nengo_dl.tensor_layer(x, neuron_type)
+
+
+	# print(x.size_in)
+	# print(x.size_out)
+
+	#2nd conv layer
+	x = nengo_dl.tensor_layer(x, tf.layers.conv2d,shape_in=(32,32,48),filters=48, kernel_size=3)
+	x = nengo_dl.tensor_layer(x, neuron_type)
+
+	#1st pooling layer
+	x = nengo_dl.tensor_layer(x, tf.layers.average_pooling2d,shape_in=(30,30,48),pool_size=2,strides=2) #strides 2? 
+	x = nengo_dl.tensor_layer(x, tf.layers.dropout, rate=0.25)
+
+	#3rd conv layer
+	x = nengo_dl.tensor_layer(x, tf.layers.conv2d,shape_in=(15,15,48),filters=96,kernel_size=3, padding='same')
+	x = nengo_dl.tensor_layer(x, neuron_type)
+
+	#4th conv layer
+	x = nengo_dl.tensor_layer(x, tf.layers.conv2d,shape_in=(15,15,96),filters=96,kernel_size=3)
+	x = nengo_dl.tensor_layer(x, neuron_type)
+
+	#2nd pooling layer
+	x = nengo_dl.tensor_layer(x, tf.layers.average_pooling2d, shape_in=(13,13,96),pool_size=2, strides=2) #strides2?
+	x = nengo_dl.tensor_layer(x, tf.layers.dropout, rate=0.25)
+
+	#5th conv layer
+	x = nengo_dl.tensor_layer(x, tf.layers.conv2d, shape_in=(6,6,96),filters=192, kernel_size=3, padding='same')
+	x = nengo_dl.tensor_layer(x, neuron_type)
+
+	#6th conv layer
+	x = nengo_dl.tensor_layer(x, tf.layers.conv2d, shape_in=(6,6,192),filters=192, kernel_size=3)
+	x = nengo_dl.tensor_layer(x, neuron_type)
+
+	#3rd pooling layer
+	x = nengo_dl.tensor_layer(x, tf.layers.average_pooling2d,shape_in=(4,4,192),pool_size=2,strides=2)
+	x = nengo_dl.tensor_layer(x, tf.layers.dropout, rate=0.25)
+
+	x = nengo_dl.tensor_layer(x, tf.layers.flatten) #ther's also Flatten??
+
+	# linear readout
+	x = nengo_dl.tensor_layer(x, tf.layers.dense, units=512)
+	x = nengo_dl.tensor_layer(x, neuron_type)
+	x = nengo_dl.tensor_layer(x, tf.layers.dropout, rate=0.5)
+	x = nengo_dl.tensor_layer(x, tf.layers.dense, units=256)
+	x = nengo_dl.tensor_layer(x, neuron_type)
+	x = nengo_dl.tensor_layer(x, tf.layers.dropout, rate=0.5)
+	x = nengo_dl.tensor_layer(x, tf.layers.dense, units=num_classes,activation='softmax')
+
+	out_p = nengo.Probe(x)
+	out_p_filt = nengo.Probe(x, synapse=0.1)
+
+
+
+minibatch_size = 200
+sim = nengo_dl.Simulator(net, minibatch_size=minibatch_size)
+
+n_steps = 30
+
+train_features = train_features.transpose(0,2,3,1)
+train_features = np.reshape(train_features, (num_train,3072))
+test_features = test_features.transpose(0,2,3,1)
+test_features = np.reshape(test_features,(num_test, 3072))
+
+train_inputs = {inp: train_features[:, None, :]}
+train_targets = {out_p: train_labels[:, None, :]}
+
+test_inputs = {inp: np.tile(test_features[:minibatch_size*2, None, :], (1, n_steps, 1))}
+test_targets = {out_p_filt: np.tile(test_labels[:minibatch_size*2, None, :], (1, n_steps, 1))}
+
+
+def objective (x, y):
+	return tf.nn.softmax_cross_entropy_with_logits_v2(logits=x, labels=y)
+
+opt = tf.train.AdamOptimizer(learning_rate=0.001)
+
+def classification_error(outputs, targets):
+	return 100 * tf.reduce_mean(tf.cast(tf.not_equal(tf.argmax(outputs[:, -1], axis=-1), tf.argmax(targets[:, -1], axis=-1)), tf.float32))
+
+print("error before training: %.2f%%" % sim.loss(test_inputs, test_targets, {out_p_filt: classification_error}))
+
+start = time.time()
+
+sim.train(train_inputs, train_targets, opt, objective={out_p: objective}, n_epochs=100)
+
+sim.save_params("./cifar10_params")
+
+end = time.time()
+
+print ("Model took %0.2f seconds to train"%(end - start))
+# compute test accuracy
+print("error after training: %.2f%%" % sim.loss(test_inputs, test_targets, {out_p_filt: classification_error}))
+
+
+sim.close()
+
+
+##########Original:: Define the model##################
+#model = Sequential()
+#model.add(Convolution2D(48, 3, 3, border_mode='same', input_shape=(3, 32, 32)))
+#model.add(Activation('relu'))
+#model.add(Convolution2D(48, 3, 3))
+#model.add(Activation('relu'))
+#model.add(MaxPooling2D(pool_size=(2, 2)))
+#model.add(Dropout(0.25))
+#model.add(Convolution2D(96, 3, 3, border_mode='same'))
+#model.add(Activation('relu'))
+# model.add(Convolution2D(96, 3, 3))
+# model.add(Activation('relu'))
+# model.add(MaxPooling2D(pool_size=(2, 2)))
+# model.add(Dropout(0.25))
+# model.add(Convolution2D(192, 3, 3, border_mode='same'))
+# model.add(Activation('relu'))
+# model.add(Convolution2D(192, 3, 3))
+# model.add(Activation('relu'))
+# model.add(MaxPooling2D(pool_size=(2, 2)))
+# model.add(Dropout(0.25))
+# model.add(Flatten())
+# model.add(Dense(512))
+# model.add(Activation('relu'))
+# model.add(Dropout(0.5))
+# model.add(Dense(256))
+# model.add(Activation('relu'))
+# model.add(Dropout(0.5))
+# model.add(Dense(num_classes, activation='softmax'))
+# Compile the model
+
+# model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+#model_info = model.fit(train_features, train_labels, batch_size=128, nb_epoch=200, validation_data = (test_features, test_labels), verbose=0)
+###############################################################
+
+# Train the model
+# print ("Accuracy on test data before training is: %0.2f"%accuracy(test_features, test_labels, model))
+#----------
+
+# plot model history
+#plot_model_history(model_info)
+
+# print ("Accuracy on test data after training is: %0.2f"%accuracy(test_features, test_labels, model))
+
+
+# # from keras.preprocessing.image import ImageDataGenerator
+
+# # datagen = ImageDataGenerator(zoom_range=0.2, 
+# #                             horizontal_flip=True)
+
+
+# # # train the model
+# # start = time.time()
+# # # Train the model
+# # model_info = model.fit_generator(datagen.flow(train_features, train_labels, batch_size = 128),
+# #                                  samples_per_epoch = train_features.shape[0], nb_epoch = 200, 
+# #                                  validation_data = (test_features, test_labels), verbose=0)
+# # end = time.time()
+# # print "Model took %0.2f seconds to train"%(end - start)
+# # # plot model history
+# # plot_model_history(model_info)
+# # # compute test accuracy
+# # print "Accuracy on test data is: %0.2f"%accuracy(test_features, test_labels, model)
